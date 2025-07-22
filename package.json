@@ -1,0 +1,82 @@
+{
+  "name": "@plugnplay/websockets",
+  "version": "1.0.0",
+  "description": "Type-safe plug-and-play WebSocket architecture with session management and search capabilities",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "jest",
+    "lint": "eslint src/**/*.ts",
+    "prepublishOnly": "npm run build && npm test",
+    "prepare": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bojidaryovchev/plug-n-play-ws.git"
+  },
+  "homepage": "https://github.com/bojidaryovchev/plug-n-play-ws#readme",
+  "bugs": {
+    "url": "https://github.com/bojidaryovchev/plug-n-play-ws/issues"
+  },
+  "keywords": [
+    "websockets",
+    "typescript",
+    "nextjs",
+    "react",
+    "session-management",
+    "real-time",
+    "search",
+    "redis",
+    "upstash",
+    "edge-ngram",
+    "type-safe",
+    "plug-and-play"
+  ],
+  "author": "bojidaryovchev",
+  "license": "MIT",
+  "files": [
+    "dist",
+    "README.md",
+    "docs",
+    "examples"
+  ],
+  "engines": {
+    "node": ">=16.0.0",
+    "npm": ">=7.0.0"
+  },
+  "peerDependencies": {
+    "react": ">=16.8.0",
+    "next": ">=12.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    },
+    "next": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "ws": "^8.14.2",
+    "uuid": "^9.0.1"
+  },
+  "optionalDependencies": {
+    "ioredis": "^5.3.2",
+    "@upstash/redis": "^1.28.4"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.10",
+    "@types/uuid": "^9.0.7",
+    "@types/node": "^20.10.4",
+    "@types/react": "^18.2.42",
+    "@types/jest": "^29.5.8",
+    "typescript": "^5.3.2",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.1",
+    "eslint": "^8.54.0",
+    "@typescript-eslint/eslint-plugin": "^6.12.0",
+    "@typescript-eslint/parser": "^6.12.0"
+  }
+}
