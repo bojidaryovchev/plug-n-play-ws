@@ -1,82 +1,133 @@
 {
-  "name": "@plugnplay/websockets",
+  "name": "plug-n-play-ws",
   "version": "1.0.0",
-  "description": "Type-safe plug-and-play WebSocket architecture with session management and search capabilities",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
-    "test": "jest",
-    "lint": "eslint src/**/*.ts",
-    "prepublishOnly": "npm run build && npm test",
-    "prepare": "npm run build"
+  "description": "A plug-and-play WebSocket layer on top of Socket.IO with full TypeScript support, zero manual wiring, and production-ready features",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "import": "./dist/client/index.mjs",
+      "require": "./dist/client/index.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.mjs",
+      "require": "./dist/server/index.js"
+    },
+    "./adapters": {
+      "types": "./dist/adapters/index.d.ts",
+      "import": "./dist/adapters/index.mjs",
+      "require": "./dist/adapters/index.js"
+    },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "import": "./dist/react/index.mjs",
+      "require": "./dist/react/index.js"
+    }
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/bojidaryovchev/plug-n-play-ws.git"
-  },
-  "homepage": "https://github.com/bojidaryovchev/plug-n-play-ws#readme",
-  "bugs": {
-    "url": "https://github.com/bojidaryovchev/plug-n-play-ws/issues"
-  },
-  "keywords": [
-    "websockets",
-    "typescript",
-    "nextjs",
-    "react",
-    "session-management",
-    "real-time",
-    "search",
-    "redis",
-    "upstash",
-    "edge-ngram",
-    "type-safe",
-    "plug-and-play"
-  ],
-  "author": "bojidaryovchev",
-  "license": "MIT",
   "files": [
     "dist",
     "README.md",
-    "docs",
-    "examples"
+    "LICENSE"
   ],
-  "engines": {
-    "node": ">=16.0.0",
-    "npm": ">=7.0.0"
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest",
+    "test:coverage": "vitest --coverage",
+    "test:ci": "vitest run --coverage",
+    "test:unit": "vitest run tests/adapters.test.ts tests/client.test.ts tests/server.test.ts tests/types.test.ts",
+    "test:integration": "vitest run tests/adapters.redis.test.ts tests/react.test.ts tests/nextjs.test.ts",
+    "test:redis": "vitest run tests/adapters.redis.test.ts",
+    "lint": "eslint src --ext .ts,.tsx",
+    "lint:fix": "eslint src --ext .ts,.tsx --fix",
+    "format": "prettier --write \"src/**/*.{ts,tsx,json,md}\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,json,md}\"",
+    "type-check": "tsc --noEmit",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "docker:dev": "docker-compose -f docker-compose.dev.yml up -d",
+    "docker:dev-down": "docker-compose -f docker-compose.dev.yml down",
+    "docker:logs": "docker-compose logs -f",
+    "prepack": "npm run build",
+    "release": "semantic-release"
   },
+  "keywords": [
+    "websocket",
+    "socket.io",
+    "typescript",
+    "realtime",
+    "plug-and-play",
+    "react",
+    "nextjs",
+    "redis",
+    "search",
+    "session-management"
+  ],
+  "author": "Your Name <your.email@example.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bojidaryovchev/plug-n-play-ws.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bojidaryovchev/plug-n-play-ws/issues"
+  },
+  "homepage": "https://github.com/bojidaryovchev/plug-n-play-ws#readme",
   "peerDependencies": {
-    "react": ">=16.8.0",
-    "next": ">=12.0.0"
+    "next": ">=13.0.0",
+    "react": ">=18.0.0",
+    "socket.io": ">=4.7.0",
+    "socket.io-client": ">=4.7.0"
   },
   "peerDependenciesMeta": {
-    "react": {
+    "next": {
       "optional": true
     },
-    "next": {
+    "react": {
       "optional": true
     }
   },
   "dependencies": {
-    "ws": "^8.14.2",
-    "uuid": "^9.0.1"
-  },
-  "optionalDependencies": {
+    "eventemitter3": "^5.0.1",
     "ioredis": "^5.3.2",
-    "@upstash/redis": "^1.28.4"
+    "zod": "^3.22.4"
   },
   "devDependencies": {
-    "@types/ws": "^8.5.10",
-    "@types/uuid": "^9.0.7",
-    "@types/node": "^20.10.4",
-    "@types/react": "^18.2.42",
-    "@types/jest": "^29.5.8",
-    "typescript": "^5.3.2",
-    "jest": "^29.7.0",
-    "ts-jest": "^29.1.1",
-    "eslint": "^8.54.0",
-    "@typescript-eslint/eslint-plugin": "^6.12.0",
-    "@typescript-eslint/parser": "^6.12.0"
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.3.0",
+    "@types/jsdom": "^21.1.7",
+    "@types/node": "^20.10.0",
+    "@types/react": "^19.1.8",
+    "@typescript-eslint/eslint-plugin": "^6.14.0",
+    "@typescript-eslint/parser": "^6.14.0",
+    "@vitest/coverage-v8": "^3.2.4",
+    "eslint": "^8.55.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-prettier": "^5.0.1",
+    "eslint-plugin-react": "^7.33.2",
+    "eslint-plugin-react-hooks": "^4.6.0",
+    "jsdom": "^26.1.0",
+    "next": "^15.4.2",
+    "prettier": "^3.1.1",
+    "prettier-plugin-organize-imports": "^4.1.0",
+    "react": "^19.1.0",
+    "semantic-release": "^22.0.8",
+    "socket.io": "^4.7.4",
+    "socket.io-client": "^4.7.4",
+    "tsup": "^8.0.1",
+    "typescript": "^5.3.3",
+    "vite": "^6.0.0",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: pnp-ws-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  upstash-redis:
+    image: redis:7-alpine
+    container_name: pnp-ws-upstash-redis
+    ports:
+      - "6380:6379"
+    command: redis-server --appendonly yes --port 6379
+    volumes:
+      - upstash_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  redis_data:
+    driver: local
+  upstash_redis_data:
+    driver: local
+
+networks:
+  default:
+    name: pnp-ws-network

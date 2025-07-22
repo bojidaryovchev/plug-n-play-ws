@@ -1,138 +1,243 @@
-// Core message types
-export interface BaseMessage {
-  id: string;
-  timestamp: number;
+// Core types and interfaces for the plug-n-play-ws package
+
+import { z } from 'zod';
+
+/**
+ * Base event schema for type-safe messaging
+ */
+export interface BaseEvent {
   type: string;
+  payload?: unknown;
+  timestamp?: number;
+  sessionId?: string;
 }
 
-export interface PingMessage extends BaseMessage {
-  type: 'ping';
+/**
+ * Connection status enum
+ */
+export enum ConnectionStatus {
+  CONNECTING = 'connecting',
+  CONNECTED = 'connected',
+  DISCONNECTED = 'disconnected',
+  RECONNECTING = 'reconnecting',
+  ERROR = 'error',
 }
 
-export interface PongMessage extends BaseMessage {
-  type: 'pong';
-}
-
-export interface UserMessage<T = any> extends BaseMessage {
-  type: 'message';
-  data: T;
-}
-
-export interface ErrorMessage extends BaseMessage {
-  type: 'error';
-  error: string;
-  code?: number;
-}
-
-export interface SearchMessage extends BaseMessage {
-  type: 'search';
-  query: string;
-  filters?: Record<string, any>;
-}
-
-export interface SearchResultMessage extends BaseMessage {
-  type: 'search_result';
-  results: SearchResult[];
-  total: number;
-  query: string;
-}
-
-export type WSMessage<T = any> = 
-  | PingMessage 
-  | PongMessage 
-  | UserMessage<T> 
-  | ErrorMessage 
-  | SearchMessage 
-  | SearchResultMessage;
-
-// Session management
-export interface Session {
+/**
+ * Session metadata interface
+ */
+export interface SessionMetadata {
   id: string;
   userId?: string;
-  connectionId: string;
-  metadata: Record<string, any>;
-  lastActivity: number;
-  isActive: boolean;
+  tabId?: string;
+  userAgent?: string;
+  ip?: string;
+  connectedAt: Date;
+  lastSeenAt: Date;
+  metadata?: Record<string, unknown>;
 }
 
-export interface SessionStorage {
-  set(sessionId: string, session: Session): Promise<void>;
-  get(sessionId: string): Promise<Session | null>;
-  delete(sessionId: string): Promise<void>;
-  getActiveSessions(): Promise<Session[]>;
-  updateLastActivity(sessionId: string): Promise<void>;
-  cleanup(maxAge: number): Promise<void>;
-}
-
-// Search types
-export interface SearchResult {
-  id: string;
-  score: number;
-  data: Record<string, any>;
-  highlights?: Record<string, string[]>;
-}
-
-export interface SearchIndex {
-  add(id: string, data: Record<string, any>): Promise<void>;
-  remove(id: string): Promise<void>;
-  search(query: string, options?: SearchOptions): Promise<SearchResult[]>;
-  clear(): Promise<void>;
-}
-
-export interface SearchOptions {
+/**
+ * Search query interface
+ */
+export interface SearchQuery {
+  query: string;
   limit?: number;
   offset?: number;
-  filters?: Record<string, any>;
-  fields?: string[];
-  fuzzy?: boolean;
+  filters?: Record<string, unknown>;
+  streaming?: boolean;
 }
 
-// WebSocket server configuration
-export interface WSServerConfig {
+/**
+ * Search result interface
+ */
+export interface SearchResult<T = unknown> {
+  id: string;
+  score: number;
+  data: T;
+  highlights?: string[];
+}
+
+/**
+ * Search response interface
+ */
+export interface SearchResponse<T = unknown> {
+  query: string;
+  results: SearchResult<T>[];
+  total: number;
+  took: number;
+  hasMore?: boolean;
+}
+
+/**
+ * Logger interface for structured logging
+ */
+export interface Logger {
+  debug(message: string, meta?: Record<string, unknown>): void;
+  info(message: string, meta?: Record<string, unknown>): void;
+  warn(message: string, meta?: Record<string, unknown>): void;
+  error(message: string, meta?: Record<string, unknown>): void;
+}
+
+/**
+ * Default console logger implementation
+ */
+export class ConsoleLogger implements Logger {
+  debug(message: string, meta?: Record<string, unknown>): void {
+    console.debug(`[DEBUG] ${message}`, meta || '');
+  }
+
+  info(message: string, meta?: Record<string, unknown>): void {
+    console.info(`[INFO] ${message}`, meta || '');
+  }
+
+  warn(message: string, meta?: Record<string, unknown>): void {
+    console.warn(`[WARN] ${message}`, meta || '');
+  }
+
+  error(message: string, meta?: Record<string, unknown>): void {
+    console.error(`[ERROR] ${message}`, meta || '');
+  }
+}
+
+/**
+ * Configuration options for the WebSocket server
+ */
+export interface ServerConfig {
   port?: number;
-  path?: string;
-  sessionStorage: SessionStorage;
-  searchIndex?: SearchIndex;
+  cors?: {
+    origin?: string | string[] | boolean;
+    methods?: string[];
+    credentials?: boolean;
+  };
   heartbeatInterval?: number;
-  sessionTimeout?: number;
-  onMessage?: <T>(session: Session, message: UserMessage<T>) => Promise<void>;
-  onConnect?: (session: Session) => Promise<void>;
-  onDisconnect?: (session: Session) => Promise<void>;
-  onError?: (error: Error, session?: Session) => void;
+  heartbeatTimeout?: number;
+  logger?: Logger;
+  adapter?: IAdapter;
+  redis?: {
+    host?: string;
+    port?: number;
+    password?: string;
+    db?: number;
+    url?: string;
+  };
+  gracefulShutdownTimeout?: number;
 }
 
-// Client configuration
-export interface WSClientConfig {
+/**
+ * Configuration options for the WebSocket client
+ */
+export interface ClientConfig {
   url: string;
-  reconnectAttempts?: number;
-  reconnectInterval?: number;
-  heartbeatInterval?: number;
-  onConnect?: () => void;
-  onDisconnect?: () => void;
-  onError?: (error: Event) => void;
-  onMessage?: <T>(message: WSMessage<T>) => void;
+  autoConnect?: boolean;
+  reconnection?: boolean;
+  reconnectionAttempts?: number;
+  reconnectionDelay?: number;
+  reconnectionDelayMax?: number;
+  timeout?: number;
+  forceNew?: boolean;
+  logger?: Logger;
+  auth?: Record<string, unknown>;
 }
 
-// React hook types
-export interface UseWebSocketReturn<T = any> {
-  isConnected: boolean;
-  isConnecting: boolean;
-  sendMessage: (data: T) => void;
-  search: (query: string, options?: SearchOptions) => Promise<SearchResult[]>;
-  lastMessage: WSMessage<T> | null;
-  error: Error | null;
-  reconnect: () => void;
+/**
+ * Generic storage adapter interface
+ */
+export interface IAdapter {
+  // Session management
+  setSession(sessionId: string, metadata: SessionMetadata): Promise<void>;
+  getSession(sessionId: string): Promise<SessionMetadata | null>;
+  deleteSession(sessionId: string): Promise<void>;
+  getAllSessions(): Promise<SessionMetadata[]>;
+  updateLastSeen(sessionId: string): Promise<void>;
+
+  // Search indexing
+  indexDocument(id: string, content: string, metadata?: Record<string, unknown>): Promise<void>;
+  removeDocument(id: string): Promise<void>;
+  search(query: SearchQuery): Promise<SearchResponse>;
+
+  // Cleanup and maintenance
+  cleanup(): Promise<void>;
+  disconnect(): Promise<void>;
 }
 
-// Message handler types
-export type MessageHandler<T = any> = (data: T, session: Session) => Promise<void> | void;
-export type MessageHandlerMap = Map<string, MessageHandler>;
-
-// Events
-export interface WSEvents {
-  connect: (session: Session) => void;
-  disconnect: (session: Session) => void;
-  message: <T>(message: UserMessage<T>, session: Session) => void;
-  error: (error: Error, session?: Session) => void;
-  search: (query: string, results: SearchResult[], session: Session) => void;
+/**
+ * Event type mapping for type-safe messaging
+ */
+export interface EventMap extends Record<string, unknown> {
+  // Connection events
+  connect: { sessionId: string; metadata: SessionMetadata };
+  disconnect: { sessionId: string; reason: string };
+  error: { sessionId: string; error: Error };
+  
+  // Heartbeat events
+  ping: { timestamp: number };
+  pong: { timestamp: number };
+  
+  // Search events
+  search: SearchQuery;
+  'search-result': SearchResponse;
+  'search-stream': { chunk: SearchResult; isLast: boolean };
+  
+  // Custom events (can be extended)
+  message: { content: string; from?: string };
+  notification: { title: string; body: string; type?: string };
 }
+
+/**
+ * Type-safe event emitter interface
+ */
+export interface TypedEventEmitter<T extends Record<string, unknown> = EventMap> {
+  on<K extends keyof T>(event: K, listener: (data: T[K]) => void): this;
+  off<K extends keyof T>(event: K, listener: (data: T[K]) => void): this;
+  emit<K extends keyof T>(event: K, data: T[K]): boolean;
+  once<K extends keyof T>(event: K, listener: (data: T[K]) => void): this;
+  removeAllListeners<K extends keyof T>(event?: K): this;
+}
+
+/**
+ * Zod schemas for runtime validation
+ */
+export const SessionMetadataSchema = z.object({
+  id: z.string(),
+  userId: z.string().optional(),
+  tabId: z.string().optional(),
+  userAgent: z.string().optional(),
+  ip: z.string().optional(),
+  connectedAt: z.date(),
+  lastSeenAt: z.date(),
+  metadata: z.record(z.unknown()).optional(),
+});
+
+export const SearchQuerySchema = z.object({
+  query: z.string().min(1),
+  limit: z.number().int().positive().max(1000).default(10),
+  offset: z.number().int().min(0).default(0),
+  filters: z.record(z.unknown()).optional(),
+  streaming: z.boolean().default(false),
+});
+
+export const SearchResultSchema = z.object({
+  id: z.string(),
+  score: z.number(),
+  data: z.unknown(),
+  highlights: z.array(z.string()).optional(),
+});
+
+export const SearchResponseSchema = z.object({
+  query: z.string(),
+  results: z.array(SearchResultSchema),
+  total: z.number().int().min(0),
+  took: z.number().min(0),
+  hasMore: z.boolean().optional(),
+});
+
+/**
+ * Utility type for extracting event data from typed event map
+ */
+export type EventData<T extends Record<string, unknown>, K extends keyof T> = T[K];
+
+/**
+ * Utility type for creating custom event maps that extend the base EventMap
+ */
+export type ExtendEventMap<T extends Record<string, unknown>> = EventMap & T;

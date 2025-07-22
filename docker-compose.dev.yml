@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: pnp-ws-redis-dev
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - ./data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  upstash-redis:
+    image: redis:7-alpine
+    container_name: pnp-ws-upstash-redis-dev
+    ports:
+      - "6380:6379"
+    command: redis-server --appendonly yes --port 6379
+    volumes:
+      - ./data/upstash-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  # Optional: Redis Commander for GUI
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: pnp-ws-redis-commander
+    ports:
+      - "8081:8081"
+    environment:
+      - REDIS_HOSTS=redis:redis:6379,upstash:upstash-redis:6379
+    depends_on:
+      - redis
+      - upstash-redis
+
+volumes: {}

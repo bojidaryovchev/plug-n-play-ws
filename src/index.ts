@@ -1,21 +1,12 @@
-// Types
+// Main export index
+
 export * from './types';
+export * from './server';
+export * from './client';
+export * from './adapters';
+export * from './utils/text-processing';
 
-// Server
-export { PlugNPlayWSServer } from './server/ws-server';
-export { NextJSWebSocketAdapter, createNextJSWebSocketServer, withWebSocket } from './server/nextjs-adapter';
-
-// Storage
-export { InMemorySessionStorage } from './storage/in-memory-session-storage';
-export { RedisSessionStorage } from './storage/redis-session-storage';
-
-// Search
-export { InMemorySearchIndex } from './search/in-memory-search-index';
-export { RedisSearchIndex } from './search/redis-search-index';
-
-// Client
-export { useWebSocket, useTypedWebSocket, useWebSocketStatus } from './client/react-hooks';
-
-// Utilities
-export * from './utils/message-helpers';
-export * from './utils/validators';
+// Default exports for convenience
+export { PlugNPlayServer } from './server';
+export { PlugNPlayClient } from './client';
+export { MemoryAdapter, RedisAdapter, UpstashRedisAdapter } from './adapters';
