@@ -1,299 +1,306 @@
-// Redis adapter implementation for production use
+// Unified Redis adapter that works with both ioredis and Upstash Redis
 
-import Redis from 'ioredis';
 import {
   IAdapter,
   SessionMetadata,
   SearchQuery,
   SearchResponse,
-  SearchResult,
 } from '../types';
-import { buildNGrams, buildEdgeGrams, generateHighlights } from '../utils/text-processing';
+import { BaseSearchAdapter, SearchConfig, DocumentData } from './base-search';
+import { UnifiedRedisInterface } from './redis-clients';
 
-export interface RedisAdapterConfig {
-  host?: string;
-  port?: number;
-  password?: string;
-  db?: number;
-  url?: string;
+export interface UnifiedRedisAdapterConfig {
+  redis: UnifiedRedisInterface;
   keyPrefix?: string;
+  searchConfig?: Partial<SearchConfig>;
+  ttl?: {
+    session: number;
+    document: number;
+    index: number;
+  };
 }
 
 /**
- * Redis adapter for production use with persistence and scalability
+ * Unified Redis adapter that eliminates duplication between Redis implementations
+ * Works with both regular Redis (ioredis) and Upstash Redis (HTTP-based)
  */
-export class RedisAdapter implements IAdapter {
-  private redis: Redis;
+export class UnifiedRedisAdapter extends BaseSearchAdapter implements IAdapter {
+  private redis: UnifiedRedisInterface;
   private keyPrefix: string;
+  private ttl: {
+    session: number;
+    document: number;
+    index: number;
+  };
 
-  constructor(config: RedisAdapterConfig = {}) {
+  constructor(config: UnifiedRedisAdapterConfig) {
+    super(config.searchConfig);
+    this.redis = config.redis;
     this.keyPrefix = config.keyPrefix || 'pnp-ws:';
-
-    if (config.url) {
-      this.redis = new Redis(config.url);
-    } else {
-      const redisConfig = {
-        host: config.host || 'localhost',
-        port: config.port || 6379,
-        db: config.db || 0,
-        maxRetriesPerRequest: 3,
-        lazyConnect: true,
-        ...(config.password && { password: config.password }),
-      };
-
-      this.redis = new Redis(redisConfig);
-    }
+    this.ttl = {
+      session: 24 * 60 * 60, // 24 hours
+      document: 7 * 24 * 60 * 60, // 7 days
+      index: 7 * 24 * 60 * 60, // 7 days
+      ...config.ttl,
+    };
   }
 
   private getKey(type: string, id: string): string {
     return `${this.keyPrefix}${type}:${id}`;
   }
 
-  async setSession(
-    sessionId: string,
-    metadata: SessionMetadata
-  ): Promise<void> {
+  // Session Management
+  async setSession(sessionId: string, metadata: SessionMetadata): Promise<void> {
     const key = this.getKey('session', sessionId);
-    const data = {
-      ...metadata,
-      connectedAt: metadata.connectedAt.toISOString(),
-      lastSeenAt: metadata.lastSeenAt.toISOString(),
-    };
-
-    await this.redis.hset(key, data);
-    await this.redis.expire(key, 24 * 60 * 60); // 24 hours TTL
-
-    // Add to sessions set for getAllSessions
-    await this.redis.sadd(this.getKey('sessions', 'active'), sessionId);
+    const flatData: string[] = [];
+    
+    // Flatten data for HSET
+    flatData.push('id', metadata.id);
+    flatData.push('connectedAt', metadata.connectedAt.toISOString());
+    flatData.push('lastSeenAt', metadata.lastSeenAt.toISOString());
+    
+    if (metadata.userId) flatData.push('userId', metadata.userId);
+    if (metadata.tabId) flatData.push('tabId', metadata.tabId);
+    if (metadata.userAgent) flatData.push('userAgent', metadata.userAgent);
+    if (metadata.ip) flatData.push('ip', metadata.ip);
+    if (metadata.metadata) flatData.push('metadata', JSON.stringify(metadata.metadata));
+    
+    await this.redis.pipeline([
+      ['HSET', key, ...flatData],
+      ['EXPIRE', key, this.ttl.session.toString()],
+      ['SADD', this.getKey('sessions', 'active'), sessionId],
+    ]);
   }
 
   async getSession(sessionId: string): Promise<SessionMetadata | null> {
     const key = this.getKey('session', sessionId);
     const data = await this.redis.hgetall(key);
-
+    
     if (!data || Object.keys(data).length === 0 || !data.id) {
       return null;
     }
 
-    const metadata: SessionMetadata = {
+    return {
       id: data.id,
-      connectedAt: data.connectedAt ? new Date(data.connectedAt) : new Date(),
-      lastSeenAt: data.lastSeenAt ? new Date(data.lastSeenAt) : new Date(),
+      ...(data.userId && { userId: data.userId }),
+      ...(data.tabId && { tabId: data.tabId }),
+      ...(data.userAgent && { userAgent: data.userAgent }),
+      ...(data.ip && { ip: data.ip }),
+      connectedAt: new Date(data.connectedAt || Date.now()),
+      lastSeenAt: new Date(data.lastSeenAt || Date.now()),
+      ...(data.metadata && { metadata: JSON.parse(data.metadata) }),
     };
-
-    // Add optional fields only if they exist
-    if (data.userId) metadata.userId = data.userId;
-    if (data.tabId) metadata.tabId = data.tabId;
-    if (data.userAgent) metadata.userAgent = data.userAgent;
-    if (data.ip) metadata.ip = data.ip;
-    if (data.metadata) metadata.metadata = JSON.parse(data.metadata);
-
-    return metadata;
   }
 
   async deleteSession(sessionId: string): Promise<void> {
     const key = this.getKey('session', sessionId);
-    await this.redis.del(key);
-    await this.redis.srem(this.getKey('sessions', 'active'), sessionId);
+    await this.redis.pipeline([
+      ['DEL', key],
+      ['SREM', this.getKey('sessions', 'active'), sessionId],
+    ]);
   }
 
   async getAllSessions(): Promise<SessionMetadata[]> {
-    const sessionIds = await this.redis.smembers(
-      this.getKey('sessions', 'active')
-    );
+    const sessionIds = await this.redis.smembers(this.getKey('sessions', 'active'));
     const sessions: SessionMetadata[] = [];
-
+    
     for (const sessionId of sessionIds) {
       const session = await this.getSession(sessionId);
       if (session) {
         sessions.push(session);
       } else {
-        // Cleanup stale session ID from set
+        // Cleanup stale session ID
         await this.redis.srem(this.getKey('sessions', 'active'), sessionId);
       }
     }
-
+    
     return sessions;
   }
 
   async updateLastSeen(sessionId: string): Promise<void> {
     const key = this.getKey('session', sessionId);
-    await this.redis.hset(key, 'lastSeenAt', new Date().toISOString());
-    await this.redis.expire(key, 24 * 60 * 60); // Refresh TTL
+    await this.redis.pipeline([
+      ['HSET', key, 'lastSeenAt', new Date().toISOString()],
+      ['EXPIRE', key, this.ttl.session.toString()],
+    ]);
   }
 
+  // Document Indexing
   async indexDocument(
     id: string,
     content: string,
     metadata?: Record<string, unknown>
   ): Promise<void> {
-    // Store document
     const docKey = this.getKey('doc', id);
-    await this.redis.hset(docKey, {
-      content,
-      ...(metadata && { metadata: JSON.stringify(metadata) }),
-      indexedAt: new Date().toISOString(),
-    });
+    const docData: string[] = [
+      'content', content,
+      'indexedAt', new Date().toISOString(),
+    ];
+    
+    if (metadata) {
+      docData.push('metadata', JSON.stringify(metadata));
+    }
 
-    // Remove old index entries for this document
-    await this.removeDocumentFromIndexes(id);
+    // Generate search terms
+    const { ngrams, edgegrams } = this.generateSearchTerms(content);
 
-    // Build and index n-grams and edge-grams
-    const ngrams = buildNGrams(content, 3);
-    const edgegrams = buildEdgeGrams(content, 2, 10);
+    // Prepare pipeline commands
+    const commands: Array<[string, ...string[]]> = [
+      ['HSET', docKey, ...docData],
+      ['EXPIRE', docKey, this.ttl.document.toString()],
+      ['SADD', this.getKey('docs', 'all'), id],
+    ];
 
-    // Use Redis pipeline for batch operations
-    const pipeline = this.redis.pipeline();
-
-    // Index n-grams
+    // Add n-gram indexes
     for (const ngram of ngrams) {
       const ngramKey = this.getKey('ngram', ngram);
-      pipeline.sadd(ngramKey, id);
-      pipeline.expire(ngramKey, 7 * 24 * 60 * 60); // 7 days TTL
+      commands.push(['SADD', ngramKey, id]);
+      commands.push(['EXPIRE', ngramKey, this.ttl.index.toString()]);
     }
 
-    // Index edge-grams
+    // Add edge-gram indexes
     for (const edgegram of edgegrams) {
       const edgegramKey = this.getKey('edgegram', edgegram);
-      pipeline.sadd(edgegramKey, id);
-      pipeline.expire(edgegramKey, 7 * 24 * 60 * 60); // 7 days TTL
+      commands.push(['SADD', edgegramKey, id]);
+      commands.push(['EXPIRE', edgegramKey, this.ttl.index.toString()]);
     }
 
-    // Add to documents set
-    pipeline.sadd(this.getKey('docs', 'all'), id);
-
-    await pipeline.exec();
+    await this.redis.pipeline(commands);
   }
 
   async removeDocument(id: string): Promise<void> {
+    // Remove from document store and index
     await this.removeDocumentFromIndexes(id);
-
-    // Remove document data
+    
     const docKey = this.getKey('doc', id);
-    await this.redis.del(docKey);
-    await this.redis.srem(this.getKey('docs', 'all'), id);
+    await this.redis.pipeline([
+      ['DEL', docKey],
+      ['SREM', this.getKey('docs', 'all'), id],
+    ]);
   }
 
   private async removeDocumentFromIndexes(id: string): Promise<void> {
-    // This is a simplified cleanup - in production, you might want to
-    // track which terms each document is indexed under for efficient cleanup
-    const allNgramKeys = await this.redis.keys(this.getKey('ngram', '*'));
-    const allEdgegramKeys = await this.redis.keys(this.getKey('edgegram', '*'));
+    // Get all index keys - this could be optimized by tracking indexed terms per document
+    const [ngramKeys, edgegramKeys] = await Promise.all([
+      this.redis.keys(this.getKey('ngram', '*')),
+      this.redis.keys(this.getKey('edgegram', '*')),
+    ]);
 
-    const pipeline = this.redis.pipeline();
-
-    for (const key of [...allNgramKeys, ...allEdgegramKeys]) {
-      pipeline.srem(key, id);
+    const commands: Array<[string, ...string[]]> = [];
+    for (const key of [...ngramKeys, ...edgegramKeys]) {
+      commands.push(['SREM', key, id]);
     }
 
-    await pipeline.exec();
+    if (commands.length > 0) {
+      await this.redis.pipeline(commands);
+    }
   }
 
+  // Search Implementation
   async search(query: SearchQuery): Promise<SearchResponse> {
     const startTime = Date.now();
-    const searchTerms = query.query
-      .toLowerCase()
-      .split(/\s+/)
-      .filter(term => term.length > 0);
+    const { searchTerms, isValid } = this.normalizeSearchQuery(query);
 
-    if (searchTerms.length === 0) {
-      return {
-        query: query.query,
-        results: [],
-        total: 0,
-        took: Date.now() - startTime,
-        hasMore: false,
-      };
+    if (!isValid) {
+      return this.createEmptyResponse(query, startTime);
     }
 
     // Collect matching document IDs with scores
-    const documentScores = new Map<string, number>();
+    const documentScores = new Map<string, { score: number; data: DocumentData }>();
 
+    // Process each search term
     for (const term of searchTerms) {
-      const termNgrams = buildNGrams(term, 3);
-      const termEdgegrams = buildEdgeGrams(term, 2, 10);
+      const { ngrams, edgegrams } = this.generateSearchTerms(term);
 
-      // Get matches from n-gram indexes
-      for (const ngram of termNgrams) {
-        const ngramKey = this.getKey('ngram', ngram);
-        const matchingDocs = await this.redis.smembers(ngramKey);
+      // Collect n-gram and edge-gram matches efficiently
+      const ngramCommands: Array<[string, ...string[]]> = ngrams.map(ngram => 
+        ['SMEMBERS', this.getKey('ngram', ngram)]
+      );
+      const edgegramCommands: Array<[string, ...string[]]> = edgegrams.map(edgegram => 
+        ['SMEMBERS', this.getKey('edgegram', edgegram)]
+      );
 
+      // Execute all lookups in parallel using pipeline
+      const [ngramResults, edgegramResults] = await Promise.all([
+        this.redis.pipeline(ngramCommands),
+        this.redis.pipeline(edgegramCommands),
+      ]);
+
+      // Process n-gram matches
+      (ngramResults as string[][]).forEach(matchingDocs => {
         for (const docId of matchingDocs) {
-          documentScores.set(docId, (documentScores.get(docId) || 0) + 1);
-        }
-      }
-
-      // Get matches from edge-gram indexes (with higher weight)
-      for (const edgegram of termEdgegrams) {
-        const edgegramKey = this.getKey('edgegram', edgegram);
-        const matchingDocs = await this.redis.smembers(edgegramKey);
-
-        for (const docId of matchingDocs) {
-          const boost = edgegram.length / 10; // Longer matches get higher score
-          documentScores.set(docId, (documentScores.get(docId) || 0) + boost);
-        }
-      }
-    }
-
-    // Convert to results array
-    const allResults: SearchResult[] = [];
-
-    for (const [docId, score] of documentScores.entries()) {
-      const docKey = this.getKey('doc', docId);
-      const docData = await this.redis.hgetall(docKey);
-
-      if (docData && docData.content) {
-        // Generate highlights
-        const highlights = generateHighlights(
-          docData.content,
-          searchTerms
-        );
-
-        const data: Record<string, unknown> = { content: docData.content };
-        if (docData.metadata) {
-          try {
-            Object.assign(data, JSON.parse(docData.metadata));
-          } catch {
-            // Ignore invalid JSON metadata
+          if (!documentScores.has(docId)) {
+            documentScores.set(docId, { score: 0, data: { content: '' } });
           }
+          documentScores.get(docId)!.score += this.searchConfig.ngramWeight;
         }
+      });
 
-        allResults.push({
-          id: docId,
-          score,
-          data,
-          highlights,
-        });
-      }
+      // Process edge-gram matches
+      (edgegramResults as string[][]).forEach((matchingDocs, index) => {
+        const edgegram = edgegrams[index];
+        if (!edgegram) return;
+        
+        const boost = edgegram.length / this.searchConfig.maxEdgegram;
+        
+        for (const docId of matchingDocs) {
+          if (!documentScores.has(docId)) {
+            documentScores.set(docId, { score: 0, data: { content: '' } });
+          }
+          documentScores.get(docId)!.score += boost * this.searchConfig.edgegramWeight;
+        }
+      });
     }
 
-    // Sort by score (descending)
-    allResults.sort((a, b) => b.score - a.score);
-
-    // Apply pagination
-    const offset = query.offset || 0;
-    const limit = query.limit || 10;
-    const paginatedResults = allResults.slice(offset, offset + limit);
-
-    return {
-      query: query.query,
-      results: paginatedResults,
-      total: allResults.length,
-      took: Date.now() - startTime,
-      hasMore: offset + limit < allResults.length,
-    };
-  }
-
-  async cleanup(): Promise<void> {
-    // Clean up expired sessions
-    const sessionIds = await this.redis.smembers(
-      this.getKey('sessions', 'active')
+    // Fetch document data for scoring candidates
+    const docCommands: Array<[string, ...string[]]> = Array.from(documentScores.keys()).map(docId => 
+      ['HGETALL', this.getKey('doc', docId)]
     );
 
+    if (docCommands.length === 0) {
+      return this.createEmptyResponse(query, startTime);
+    }
+
+    const docResults = await this.redis.pipeline(docCommands);
+
+    // Process documents and calculate final scores
+    let index = 0;
+    for (const [docId, scoreData] of documentScores.entries()) {
+      const docData = docResults[index] as Record<string, string>;
+      index++;
+
+      if (docData && docData.content) {
+        const documentData: DocumentData = {
+          content: docData.content,
+          ...(docData.metadata && { metadata: JSON.parse(docData.metadata) }),
+        };
+
+        // Calculate final relevance score including exact matches
+        const finalScore = this.calculateRelevanceScore(
+          docData.content,
+          searchTerms,
+          0, // n-gram matches already counted
+          0  // edge-gram matches already counted
+        ) + scoreData.score;
+
+        documentScores.set(docId, { score: finalScore, data: documentData });
+      } else {
+        // Remove documents that no longer exist
+        documentScores.delete(docId);
+      }
+    }
+
+    return this.processSearchResults(query, searchTerms, documentScores, startTime);
+  }
+
+  // Cleanup and Maintenance
+  async cleanup(): Promise<void> {
+    const sessionIds = await this.redis.smembers(this.getKey('sessions', 'active'));
+    
     for (const sessionId of sessionIds) {
       const key = this.getKey('session', sessionId);
       const exists = await this.redis.exists(key);
-
+      
       if (!exists) {
         await this.redis.srem(this.getKey('sessions', 'active'), sessionId);
       }
@@ -301,6 +308,6 @@ export class RedisAdapter implements IAdapter {
   }
 
   async disconnect(): Promise<void> {
-    await this.redis.quit();
+    await this.redis.disconnect();
   }
 }

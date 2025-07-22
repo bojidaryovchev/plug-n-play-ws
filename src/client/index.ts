@@ -136,7 +136,7 @@ export class PlugNPlayClient<T extends Record<string, unknown> = EventMap> {
       const timeout = setTimeout(() => {
         this.socket?.off('search-result', handleResult);
         resolve(null);
-      }, 30000); // 30 second timeout
+      }, this.config.searchTimeout ?? 30000); // Configurable search timeout, default 30 seconds
 
       const handleResult = (result: SearchResponse) => {
         clearTimeout(timeout);

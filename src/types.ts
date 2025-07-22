@@ -114,13 +114,6 @@ export interface ServerConfig {
   heartbeatTimeout?: number;
   logger?: Logger;
   adapter?: IAdapter;
-  redis?: {
-    host?: string;
-    port?: number;
-    password?: string;
-    db?: number;
-    url?: string;
-  };
   gracefulShutdownTimeout?: number;
 }
 
@@ -136,6 +129,7 @@ export interface ClientConfig {
   reconnectionDelayMax?: number;
   timeout?: number;
   forceNew?: boolean;
+  searchTimeout?: number; // Default: 30000ms (timeout for search operations)
   logger?: Logger;
   auth?: Record<string, unknown>;
 }

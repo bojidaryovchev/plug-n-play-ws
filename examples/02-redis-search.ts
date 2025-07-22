@@ -1,6 +1,6 @@
 // Redis storage + search demo
 
-import { PlugNPlayServer, PlugNPlayClient, RedisAdapter } from '../src';
+import { PlugNPlayServer, PlugNPlayClient, createRedisAdapter } from '../src';
 
 // Custom event types for search
 interface SearchEvents extends Record<string, unknown> {
@@ -13,8 +13,8 @@ interface SearchEvents extends Record<string, unknown> {
 async function runRedisSearchExample() {
   console.log('🔍 Starting Redis Search Example...\n');
 
-  // 1. Create Redis adapter
-  const redisAdapter = new RedisAdapter({
+  // 1. Create Redis adapter using factory function
+  const redisAdapter = createRedisAdapter({
     host: 'localhost',
     port: 6379,
     // password: 'your-redis-password', // uncomment if needed

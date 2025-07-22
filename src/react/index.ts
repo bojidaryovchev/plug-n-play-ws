@@ -80,34 +80,9 @@ export function usePlugNPlayWs<T extends Record<string, unknown> = EventMap>(
 
     clientRef.current = client;
 
-    // Set up event listeners
-    const handleConnect = (data: { sessionId: string; metadata: SessionMetadata }) => {
-      setSessionId(data.sessionId);
-      setSessionMetadata(data.metadata);
-      options.onConnect?.(data);
-    };
-
-    const handleDisconnect = (data: { sessionId: string; reason: string }) => {
-      setSessionId(undefined);
-      setSessionMetadata(undefined);
-      options.onDisconnect?.(data);
-    };
-
-    const handleError = (error: { sessionId: string; error: Error }) => {
-      options.onError?.(error.error);
-    };
-
-    // Status monitoring
-    const statusInterval = setInterval(() => {
-      const currentStatus = client.getStatus();
+    // Helper function to update stats
+    const updateStats = () => {
       const currentStats = client.getStats();
-      
-      if (currentStatus !== status) {
-        setStatus(currentStatus);
-        options.onStatusChange?.(currentStatus);
-      }
-      
-      // Fix sessionId assignment for exactOptionalPropertyTypes
       const normalizedStats = {
         status: currentStats.status,
         reconnectAttempts: currentStats.reconnectAttempts,
@@ -115,13 +90,49 @@ export function usePlugNPlayWs<T extends Record<string, unknown> = EventMap>(
         connected: currentStats.connected,
         ...(currentStats.sessionId && { sessionId: currentStats.sessionId })
       };
-      
       setStats(normalizedStats);
-    }, 100); // Faster polling for better responsiveness
+    };
+
+    // Set up event listeners
+    const handleConnect = (data: { sessionId: string; metadata: SessionMetadata }) => {
+      setSessionId(data.sessionId);
+      setSessionMetadata(data.metadata);
+      setStatus(ConnectionStatus.CONNECTED);
+      updateStats();
+      options.onConnect?.(data);
+      options.onStatusChange?.(ConnectionStatus.CONNECTED);
+    };
+
+    const handleDisconnect = (data: { sessionId: string; reason: string }) => {
+      setSessionId(undefined);
+      setSessionMetadata(undefined);
+      setStatus(ConnectionStatus.DISCONNECTED);
+      updateStats();
+      options.onDisconnect?.(data);
+      options.onStatusChange?.(ConnectionStatus.DISCONNECTED);
+    };
+
+    const handleError = (error: { sessionId: string; error: Error }) => {
+      options.onError?.(error.error);
+    };
+
+    // Listen for reconnection attempts to update stats
+    const handleReconnectAttempt = () => {
+      setStatus(ConnectionStatus.RECONNECTING);
+      updateStats();
+      options.onStatusChange?.(ConnectionStatus.RECONNECTING);
+    };
+
+    // Listen for pong events to update stats
+    const handlePong = () => {
+      updateStats();
+    };
 
     client.on('connect', handleConnect as any);
     client.on('disconnect', handleDisconnect as any);
     client.on('error', handleError as any);
+    client.on('reconnect_attempt', handleReconnectAttempt as any);
+    client.on('pong', handlePong as any);
 
     // Auto-connect if enabled
     if (options.autoConnect !== false) {
@@ -132,10 +143,11 @@ export function usePlugNPlayWs<T extends Record<string, unknown> = EventMap>(
     }
 
     return () => {
-      clearInterval(statusInterval);
       client.off('connect', handleConnect as any);
       client.off('disconnect', handleDisconnect as any);
       client.off('error', handleError as any);
+      client.off('reconnect_attempt', handleReconnectAttempt as any);
+      client.off('pong', handlePong as any);
       client.disconnect();
     };
   }, [options.url]); // Only recreate when URL changes

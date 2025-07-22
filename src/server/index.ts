@@ -38,6 +38,7 @@ export class PlugNPlayServer<T extends Record<string, unknown> = EventMap> {
   private cleanupInterval?: ReturnType<typeof setInterval>;
   private isShuttingDown = false;
   private activeSockets = new Set<Socket>();
+  private startTime = Date.now();
 
   constructor(private config: ServerConfig = {}) {
     this.emitter = new EventEmitter<T>();
@@ -421,7 +422,7 @@ export class PlugNPlayServer<T extends Record<string, unknown> = EventMap> {
     return {
       connectedClients: this.activeSockets.size,
       isShuttingDown: this.isShuttingDown,
-      uptime: Date.now(), // Simplified uptime placeholder
+      uptime: Date.now() - this.startTime,
     };
   }
 }

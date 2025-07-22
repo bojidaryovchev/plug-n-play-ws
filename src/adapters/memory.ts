@@ -5,19 +5,32 @@ import {
   SessionMetadata,
   SearchQuery,
   SearchResponse,
-  SearchResult,
 } from '../types';
-import { buildNGrams, buildEdgeGrams, generateHighlights } from '../utils/text-processing';
+import { BaseSearchAdapter, SearchConfig, DocumentData } from './base-search';
+
+export interface MemoryAdapterConfig {
+  searchConfig?: Partial<SearchConfig>;
+  maxDocuments?: number;
+  sessionCleanupInterval?: number; // hours
+}
 
 /**
  * In-memory adapter for development and testing
  * Not suitable for production use with multiple server instances
  */
-export class MemoryAdapter implements IAdapter {
+export class MemoryAdapter extends BaseSearchAdapter implements IAdapter {
   private sessions = new Map<string, SessionMetadata>();
-  private documents = new Map<string, { content: string; metadata?: Record<string, unknown> }>();
+  private documents = new Map<string, DocumentData>();
   private ngramIndex = new Map<string, Set<string>>(); // ngram -> document IDs
   private edgegramIndex = new Map<string, Set<string>>(); // edgegram -> document IDs
+  private maxDocuments: number;
+  private sessionCleanupHours: number;
+
+  constructor(config: MemoryAdapterConfig = {}) {
+    super(config.searchConfig);
+    this.maxDocuments = config.maxDocuments || 10000;
+    this.sessionCleanupHours = config.sessionCleanupInterval || 24; // hours
+  }
 
   async setSession(sessionId: string, metadata: SessionMetadata): Promise<void> {
     this.sessions.set(sessionId, { ...metadata });
@@ -48,15 +61,22 @@ export class MemoryAdapter implements IAdapter {
     content: string,
     metadata?: Record<string, unknown>
   ): Promise<void> {
-    // Remove old index entries for this document (but keep document data)
+    // Remove old index entries for this document
     await this.removeFromIndex(id);
+
+    // Check document limit and remove oldest if necessary
+    if (this.documents.size >= this.maxDocuments) {
+      const oldestId = this.documents.keys().next().value;
+      if (oldestId) {
+        await this.removeDocument(oldestId);
+      }
+    }
 
     // Store document
     this.documents.set(id, { content, ...(metadata && { metadata }) });
 
-    // Build n-grams and edge-grams
-    const ngrams = buildNGrams(content, 3);
-    const edgegrams = buildEdgeGrams(content, 2, 10);
+    // Generate search terms using base class
+    const { ngrams, edgegrams } = this.generateSearchTerms(content);
 
     // Index n-grams
     for (const ngram of ngrams) {
@@ -102,102 +122,77 @@ export class MemoryAdapter implements IAdapter {
 
   async search(query: SearchQuery): Promise<SearchResponse> {
     const startTime = Date.now();
-    const searchTerms = query.query.toLowerCase().split(/\s+/).filter(term => term.length > 0);
+    const { searchTerms, isValid } = this.normalizeSearchQuery(query);
     
-    if (searchTerms.length === 0) {
-      return {
-        query: query.query,
-        results: [],
-        total: 0,
-        took: Date.now() - startTime,
-        hasMore: false,
-      };
+    if (!isValid) {
+      return this.createEmptyResponse(query, startTime);
     }
 
     // Find matching documents using both n-grams and edge-grams
-    const documentScores = new Map<string, number>();
+    const documentScores = new Map<string, { score: number; data: DocumentData }>();
 
     for (const term of searchTerms) {
-      // First, check for exact word matches (highest priority)
-      for (const [docId, doc] of this.documents.entries()) {
-        const contentLower = doc.content.toLowerCase();
-        const words = contentLower.split(/\s+/);
-        
-        if (words.includes(term)) {
-          // Exact word match gets highest score
-          documentScores.set(docId, (documentScores.get(docId) || 0) + 100);
-        }
-      }
+      // Generate search terms for this query term
+      const { ngrams, edgegrams } = this.generateSearchTerms(term);
 
-      // Then use n-grams and edge-grams for fuzzy matching
-      const termNgrams = buildNGrams(term, 3);
-      const termEdgegrams = buildEdgeGrams(term, 2, 10);
-
-      // Score based on n-gram matches (lower weight)
-      for (const ngram of termNgrams) {
+      // Score based on n-gram matches
+      for (const ngram of ngrams) {
         const matchingDocs = this.ngramIndex.get(ngram);
         if (matchingDocs) {
           for (const docId of matchingDocs) {
-            documentScores.set(docId, (documentScores.get(docId) || 0) + 0.5);
+            if (!documentScores.has(docId)) {
+              const doc = this.documents.get(docId);
+              if (doc) {
+                documentScores.set(docId, { score: 0, data: doc });
+              }
+            }
+            // Increment score for each n-gram match
+            const current = documentScores.get(docId)!;
+            current.score += this.searchConfig.ngramWeight;
           }
         }
       }
 
-      // Score based on edge-gram matches (medium weight for prefix matches)
-      for (const edgegram of termEdgegrams) {
+      // Score based on edge-gram matches
+      for (const edgegram of edgegrams) {
         const matchingDocs = this.edgegramIndex.get(edgegram);
         if (matchingDocs) {
           for (const docId of matchingDocs) {
-            const boost = edgegram.length / 10; // Longer matches get higher score
-            documentScores.set(docId, (documentScores.get(docId) || 0) + boost);
+            if (!documentScores.has(docId)) {
+              const doc = this.documents.get(docId);
+              if (doc) {
+                documentScores.set(docId, { score: 0, data: doc });
+              }
+            }
+            // Increment score for each edge-gram match
+            const current = documentScores.get(docId)!;
+            current.score += this.searchConfig.edgegramWeight;
           }
         }
       }
     }
 
-    // Convert to results array and sort by score
-    const allResults: SearchResult[] = [];
-    for (const [docId, score] of documentScores.entries()) {
-      // Filter out documents with very low scores (likely irrelevant matches)
-      if (score < 10) continue;
+    // Calculate final relevance scores using base class method
+    for (const [docId, scoreData] of documentScores.entries()) {
+      const finalScore = this.calculateRelevanceScore(
+        scoreData.data.content,
+        searchTerms,
+        scoreData.score, // Use actual calculated match score
+        0 // No additional boost for memory adapter
+      );
       
-      const doc = this.documents.get(docId);
-      if (doc) {
-        // Generate highlights
-        const highlights = generateHighlights(doc.content, searchTerms);
-        
-        allResults.push({
-          id: docId,
-          score,
-          data: { content: doc.content, ...doc.metadata },
-          highlights,
-        });
-      }
+      documentScores.set(docId, { ...scoreData, score: finalScore });
     }
 
-    // Sort by score (descending)
-    allResults.sort((a, b) => b.score - a.score);
-
-    // Apply pagination
-    const offset = query.offset || 0;
-    const limit = query.limit || 10;
-    const paginatedResults = allResults.slice(offset, offset + limit);
-
-    return {
-      query: query.query,
-      results: paginatedResults,
-      total: allResults.length,
-      took: Date.now() - startTime,
-      hasMore: offset + limit < allResults.length,
-    };
+    return this.processSearchResults(query, searchTerms, documentScores, startTime);
   }
 
   async cleanup(): Promise<void> {
-    // Remove sessions older than 24 hours
-    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    // Remove sessions older than configured interval
+    const cutoffTime = new Date(Date.now() - this.sessionCleanupHours * 60 * 60 * 1000);
     
     for (const [sessionId, session] of this.sessions.entries()) {
-      if (session.lastSeenAt < oneDayAgo) {
+      if (session.lastSeenAt < cutoffTime) {
         this.sessions.delete(sessionId);
       }
     }
