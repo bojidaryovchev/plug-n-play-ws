@@ -1,3 +1,5 @@
+import type { Redis } from 'ioredis';
+
 // Unified Redis interface for both ioredis and Upstash Redis
 
 export interface UnifiedRedisInterface {
@@ -28,10 +30,10 @@ export interface UnifiedRedisInterface {
  * Adapter for ioredis (regular Redis)
  */
 export class IoRedisAdapter implements UnifiedRedisInterface {
-  constructor(private redis: any) {} // ioredis instance
+  constructor(private redis: Redis) {}
 
   async hset(key: string, ...args: string[]): Promise<void> {
-    if (args.length === 2) {
+    if (args.length === 2 && args[0] && args[1]) {
       await this.redis.hset(key, args[0], args[1]);
     } else {
       await this.redis.hset(key, ...args);
@@ -69,10 +71,38 @@ export class IoRedisAdapter implements UnifiedRedisInterface {
   async pipeline(commands: Array<[string, ...string[]]>): Promise<unknown[]> {
     const pipeline = this.redis.pipeline();
     for (const [command, ...args] of commands) {
-      (pipeline as any)[command.toLowerCase()](...args);
+      // Use bracket notation to call pipeline methods dynamically
+      // TypeScript doesn't know about dynamic method calls, so we use index access
+      const pipelineMethod = (pipeline as unknown as Record<string, (...args: string[]) => typeof pipeline>)[command.toLowerCase()];
+      if (pipelineMethod) {
+        pipelineMethod.call(pipeline, ...args);
+      }
     }
     const results = await pipeline.exec();
-    return results.map((result: any) => result[1]); // Extract results from [error, result] pairs
+    
+    // Check for errors in pipeline results
+    const processedResults: unknown[] = [];
+    if (results) {
+      for (let i = 0; i < results.length; i++) {
+        const result = results[i];
+        if (!result) continue;
+        
+        const [error, value] = result;
+        if (error) {
+          let commandInfo = 'unknown';
+          if (i < commands.length) {
+            const cmd = commands[i];
+            if (cmd && cmd.length > 0) {
+              commandInfo = cmd[0];
+            }
+          }
+          throw new Error(`Pipeline command ${i} (${commandInfo}) failed: ${error.message}`);
+        }
+        processedResults.push(value);
+      }
+    }
+    
+    return processedResults;
   }
 
   async keys(pattern: string): Promise<string[]> {

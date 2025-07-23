@@ -12,8 +12,14 @@ import {
   Logger,
   ConsoleLogger,
   IAdapter,
+  SearchQuerySchema,
 } from '../types';
 import { MemoryAdapter } from '../adapters/memory';
+
+// Extended socket interface with sessionId
+interface ExtendedSocket extends Socket {
+  sessionId?: string;
+}
 
 // Simple UUID v4 implementation to avoid external dependency
 function generateUUID(): string {
@@ -33,17 +39,19 @@ export class PlugNPlayServer<T extends Record<string, unknown> = EventMap> {
   private io: SocketIOServer;
   private adapter: IAdapter;
   private logger: Logger;
-  private emitter: EventEmitter<T>;
+  private emitter: EventEmitter;
   private heartbeatInterval?: ReturnType<typeof setInterval>;
   private cleanupInterval?: ReturnType<typeof setInterval>;
   private isShuttingDown = false;
   private activeSockets = new Set<Socket>();
   private startTime = Date.now();
+  private maxConnections: number | undefined;
 
   constructor(private config: ServerConfig = {}) {
-    this.emitter = new EventEmitter<T>();
+    this.emitter = new EventEmitter();
     this.logger = config.logger || new ConsoleLogger();
     this.adapter = config.adapter || new MemoryAdapter();
+    this.maxConnections = config.maxConnections;
     
     // Create HTTP server
     this.httpServer = createServer();
@@ -66,26 +74,26 @@ export class PlugNPlayServer<T extends Record<string, unknown> = EventMap> {
 
   // Event emitter methods
   on<K extends keyof T>(event: K, listener: (data: T[K]) => void): this {
-    (this.emitter as any).on(event, listener);
+    this.emitter.on(event as string, listener);
     return this;
   }
 
   off<K extends keyof T>(event: K, listener: (data: T[K]) => void): this {
-    (this.emitter as any).off(event, listener);
+    this.emitter.off(event as string, listener);
     return this;
   }
 
   emit<K extends keyof T>(event: K, data: T[K]): boolean {
-    return (this.emitter as any).emit(event, data);
+    return this.emitter.emit(event as string, data);
   }
 
   once<K extends keyof T>(event: K, listener: (data: T[K]) => void): this {
-    (this.emitter as any).once(event, listener);
+    this.emitter.once(event as string, listener);
     return this;
   }
 
   removeAllListeners<K extends keyof T>(event?: K): this {
-    (this.emitter as any).removeAllListeners(event);
+    this.emitter.removeAllListeners(event as string);
     return this;
   }
 
@@ -274,6 +282,17 @@ export class PlugNPlayServer<T extends Record<string, unknown> = EventMap> {
   }
 
   private async handleConnection(socket: Socket): Promise<void> {
+    // Check connection limit
+    if (this.maxConnections && this.activeSockets.size >= this.maxConnections) {
+      this.logger.warn('Connection rejected: maximum connections reached', { 
+        current: this.activeSockets.size,
+        limit: this.maxConnections 
+      });
+      socket.emit('error', { error: new Error('Server capacity reached') });
+      socket.disconnect(true);
+      return;
+    }
+
     const sessionId = generateUUID();
     this.activeSockets.add(socket);
     
@@ -305,7 +324,7 @@ export class PlugNPlayServer<T extends Record<string, unknown> = EventMap> {
     await this.adapter.setSession(sessionId, metadata);
     
     // Store session ID on socket for easy access
-    (socket as unknown as { sessionId: string }).sessionId = sessionId;
+    (socket as ExtendedSocket).sessionId = sessionId;
 
     this.logger.info('Client connected', { sessionId, userId: metadata.userId });
     
@@ -332,18 +351,39 @@ export class PlugNPlayServer<T extends Record<string, unknown> = EventMap> {
     });
 
     // Handle search requests
-    socket.on('search', async (query: SearchQuery) => {
+    socket.on('search', async (query: unknown) => {
       try {
-        const results = await this.search(query, sessionId);
+        // Validate search query using Zod schema
+        const validatedQuery = SearchQuerySchema.parse(query) as SearchQuery;
+        const results = await this.search(validatedQuery, sessionId);
         socket.emit('search-result', results);
       } catch (error) {
+        let errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        let userFriendlyError = 'Search failed';
+        
+        // Handle validation errors specifically
+        if (error instanceof Error && error.name === 'ZodError') {
+          userFriendlyError = 'Invalid search query format';
+          errorMessage = 'Search query validation failed';
+        } else if (error instanceof Error) {
+          if (error.message.includes('timeout')) {
+            userFriendlyError = 'Search request timed out';
+          } else if (error.message.includes('invalid')) {
+            userFriendlyError = 'Invalid search query';
+          } else if (error.message.includes('connection')) {
+            userFriendlyError = 'Database connection error';
+          }
+        }
+        
         this.logger.error('Search error', { 
           sessionId, 
-          error: error instanceof Error ? error.message : 'Unknown error' 
+          query: typeof query === 'object' && query && 'query' in query && typeof query.query === 'string' ? query.query : 'invalid',
+          error: errorMessage 
         });
+        
         socket.emit('error', { 
           sessionId, 
-          error: new Error('Search failed') 
+          error: new Error(userFriendlyError)
         });
       }
     });
@@ -373,7 +413,7 @@ export class PlugNPlayServer<T extends Record<string, unknown> = EventMap> {
   }
 
   private async disconnectSocket(socket: Socket, reason: string): Promise<void> {
-    const sessionId = (socket as unknown as { sessionId?: string }).sessionId;
+    const sessionId = (socket as ExtendedSocket).sessionId;
     if (sessionId) {
       await this.handleDisconnection(socket, sessionId, reason);
     }
@@ -382,7 +422,7 @@ export class PlugNPlayServer<T extends Record<string, unknown> = EventMap> {
 
   private findSocketBySessionId(sessionId: string): Socket | undefined {
     for (const socket of this.activeSockets) {
-      if ((socket as unknown as { sessionId?: string }).sessionId === sessionId) {
+      if ((socket as ExtendedSocket).sessionId === sessionId) {
         return socket;
       }
     }

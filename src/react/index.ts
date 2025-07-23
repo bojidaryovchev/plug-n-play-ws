@@ -7,6 +7,7 @@ import {
   ConnectionStatus,
   SearchQuery,
   SearchResponse,
+  SearchResult,
   SessionMetadata,
 } from '../types';
 import { PlugNPlayClient } from '../client';
@@ -128,11 +129,11 @@ export function usePlugNPlayWs<T extends Record<string, unknown> = EventMap>(
       updateStats();
     };
 
-    client.on('connect', handleConnect as any);
-    client.on('disconnect', handleDisconnect as any);
-    client.on('error', handleError as any);
-    client.on('reconnect_attempt', handleReconnectAttempt as any);
-    client.on('pong', handlePong as any);
+    client.on('connect', handleConnect as (data: T['connect']) => void);
+    client.on('disconnect', handleDisconnect as (data: T['disconnect']) => void);
+    client.on('error', handleError as (data: T['error']) => void);
+    client.on('reconnect_attempt', handleReconnectAttempt);
+    client.on('pong', handlePong);
 
     // Auto-connect if enabled
     if (options.autoConnect !== false) {
@@ -143,11 +144,11 @@ export function usePlugNPlayWs<T extends Record<string, unknown> = EventMap>(
     }
 
     return () => {
-      client.off('connect', handleConnect as any);
-      client.off('disconnect', handleDisconnect as any);
-      client.off('error', handleError as any);
-      client.off('reconnect_attempt', handleReconnectAttempt as any);
-      client.off('pong', handlePong as any);
+      client.off('connect', handleConnect as (data: T['connect']) => void);
+      client.off('disconnect', handleDisconnect as (data: T['disconnect']) => void);
+      client.off('error', handleError as (data: T['error']) => void);
+      client.off('reconnect_attempt', handleReconnectAttempt);
+      client.off('pong', handlePong);
       client.disconnect();
     };
   }, [options.url]); // Only recreate when URL changes
@@ -249,7 +250,7 @@ export function usePlugNPlaySearch<T extends Record<string, unknown> = EventMap>
       setStreamingResults([]);
       
       // Listen for streaming results
-      const handleStream = (data: { chunk: unknown; isLast: boolean }) => {
+      const handleStream = (data: { chunk: SearchResult; isLast: boolean }) => {
         setStreamingResults(prev => [...prev, data.chunk]);
         if (data.isLast) {
           setIsSearching(false);

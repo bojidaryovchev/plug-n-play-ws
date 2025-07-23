@@ -21,10 +21,12 @@ export interface MemoryAdapterConfig {
 export class MemoryAdapter extends BaseSearchAdapter implements IAdapter {
   private sessions = new Map<string, SessionMetadata>();
   private documents = new Map<string, DocumentData>();
+  private documentAccessOrder = new Map<string, number>(); // Track access order for LRU
   private ngramIndex = new Map<string, Set<string>>(); // ngram -> document IDs
   private edgegramIndex = new Map<string, Set<string>>(); // edgegram -> document IDs
   private maxDocuments: number;
   private sessionCleanupHours: number;
+  private accessCounter = 0; // Monotonic counter for access order
 
   constructor(config: MemoryAdapterConfig = {}) {
     super(config.searchConfig);
@@ -64,16 +66,19 @@ export class MemoryAdapter extends BaseSearchAdapter implements IAdapter {
     // Remove old index entries for this document
     await this.removeFromIndex(id);
 
-    // Check document limit and remove oldest if necessary
-    if (this.documents.size >= this.maxDocuments) {
-      const oldestId = this.documents.keys().next().value;
-      if (oldestId) {
-        await this.removeDocument(oldestId);
+    // Check document limit and remove LRU documents if necessary
+    while (this.documents.size >= this.maxDocuments) {
+      const lruDocumentId = this.findLRUDocument();
+      if (lruDocumentId) {
+        await this.removeDocument(lruDocumentId);
+      } else {
+        break; // Shouldn't happen, but prevent infinite loop
       }
     }
 
-    // Store document
+    // Store document and update access order
     this.documents.set(id, { content, ...(metadata && { metadata }) });
+    this.documentAccessOrder.set(id, ++this.accessCounter);
 
     // Generate search terms using base class
     const { ngrams, edgegrams } = this.generateSearchTerms(content);
@@ -95,9 +100,36 @@ export class MemoryAdapter extends BaseSearchAdapter implements IAdapter {
     }
   }
 
+  /**
+   * Find the least recently used document for eviction
+   */
+  private findLRUDocument(): string | undefined {
+    let lruId: string | undefined;
+    let lruAccessTime = Infinity;
+
+    for (const [docId, accessTime] of this.documentAccessOrder.entries()) {
+      if (accessTime < lruAccessTime) {
+        lruAccessTime = accessTime;
+        lruId = docId;
+      }
+    }
+
+    return lruId;
+  }
+
+  /**
+   * Update access time for a document (for LRU tracking)
+   */
+  private updateDocumentAccess(id: string): void {
+    if (this.documents.has(id)) {
+      this.documentAccessOrder.set(id, ++this.accessCounter);
+    }
+  }
+
   async removeDocument(id: string): Promise<void> {
     // Remove from document store
     this.documents.delete(id);
+    this.documentAccessOrder.delete(id);
 
     // Remove from indexes
     await this.removeFromIndex(id);
@@ -174,6 +206,9 @@ export class MemoryAdapter extends BaseSearchAdapter implements IAdapter {
 
     // Calculate final relevance scores using base class method
     for (const [docId, scoreData] of documentScores.entries()) {
+      // Update access time for LRU tracking
+      this.updateDocumentAccess(docId);
+      
       const finalScore = this.calculateRelevanceScore(
         scoreData.data.content,
         searchTerms,
@@ -202,7 +237,9 @@ export class MemoryAdapter extends BaseSearchAdapter implements IAdapter {
     // Clear all data
     this.sessions.clear();
     this.documents.clear();
+    this.documentAccessOrder.clear();
     this.ngramIndex.clear();
     this.edgegramIndex.clear();
+    this.accessCounter = 0;
   }
 }

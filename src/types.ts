@@ -115,6 +115,7 @@ export interface ServerConfig {
   logger?: Logger;
   adapter?: IAdapter;
   gracefulShutdownTimeout?: number;
+  maxConnections?: number;
 }
 
 /**

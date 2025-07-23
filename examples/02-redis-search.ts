@@ -1,13 +1,13 @@
 // Redis storage + search demo
 
-import { PlugNPlayServer, PlugNPlayClient, createRedisAdapter } from '../src';
+import { PlugNPlayServer, PlugNPlayClient, createRedisAdapter, SearchResult } from '../src';
 
 // Custom event types for search
 interface SearchEvents extends Record<string, unknown> {
   'index-document': { id: string; content: string; metadata?: Record<string, unknown> };
   'search-query': { query: string; limit?: number; streaming?: boolean };
   'document-indexed': { id: string; success: boolean };
-  'search-results': { query: string; results: unknown[]; total: number; took: number };
+  'search-results': { query: string; results: SearchResult[]; total: number; took: number };
 }
 
 async function runRedisSearchExample() {
@@ -98,7 +98,7 @@ async function runRedisSearchExample() {
     console.log(`\n📋 Search Results for "${data.query}":`);
     console.log(`   Found ${data.total} results in ${data.took}ms`);
     
-    data.results.forEach((result: any, index: number) => {
+    data.results.forEach((result: SearchResult, index: number) => {
       console.log(`   ${index + 1}. ${result.id} (score: ${result.score})`);
       if (result.highlights && result.highlights.length > 0) {
         console.log(`      Highlight: ${result.highlights[0]}`);

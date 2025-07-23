@@ -8,9 +8,11 @@ import {
   ConnectionStatus,
   SearchQuery,
   SearchResponse,
+  SearchResult,
   SessionMetadata,
   Logger,
   ConsoleLogger,
+  SearchQuerySchema,
 } from '../types';
 
 /**
@@ -19,7 +21,7 @@ import {
 export class PlugNPlayClient<T extends Record<string, unknown> = EventMap> {
   
   private socket: Socket | undefined;
-  private emitter: EventEmitter<T>;
+  private emitter: EventEmitter;
   private logger: Logger;
   private status: ConnectionStatus = ConnectionStatus.DISCONNECTED;
   private sessionId?: string;
@@ -29,7 +31,7 @@ export class PlugNPlayClient<T extends Record<string, unknown> = EventMap> {
   private lastPongTime = 0;
 
   constructor(private config: ClientConfig) {
-    this.emitter = new EventEmitter<T>();
+    this.emitter = new EventEmitter();
     this.logger = config.logger || new ConsoleLogger();
     
     if (config.autoConnect !== false) {
@@ -39,26 +41,26 @@ export class PlugNPlayClient<T extends Record<string, unknown> = EventMap> {
 
   // Event emitter methods
   on<K extends keyof T>(event: K, listener: (data: T[K]) => void): this {
-    (this.emitter as any).on(event, listener);
+    this.emitter.on(event as string, listener);
     return this;
   }
 
   off<K extends keyof T>(event: K, listener: (data: T[K]) => void): this {
-    (this.emitter as any).off(event, listener);
+    this.emitter.off(event as string, listener);
     return this;
   }
 
   emit<K extends keyof T>(event: K, data: T[K]): boolean {
-    return (this.emitter as any).emit(event, data);
+    return this.emitter.emit(event as string, data);
   }
 
   once<K extends keyof T>(event: K, listener: (data: T[K]) => void): this {
-    (this.emitter as any).once(event, listener);
+    this.emitter.once(event as string, listener);
     return this;
   }
 
   removeAllListeners<K extends keyof T>(event?: K): this {
-    (this.emitter as any).removeAllListeners(event);
+    this.emitter.removeAllListeners(event as string);
     return this;
   }
 
@@ -105,9 +107,18 @@ export class PlugNPlayClient<T extends Record<string, unknown> = EventMap> {
     }
     
     this.setStatus(ConnectionStatus.DISCONNECTED);
+    // Don't clear session data immediately - preserve for potential reconnection
+    // Session data will be refreshed on successful reconnection
+    this.reconnectAttempts = 0;
+  }
+
+  /**
+   * Completely clear session and disconnect
+   */
+  clearSession(): void {
+    this.disconnect();
     delete this.sessionId;
     delete this.sessionMetadata;
-    this.reconnectAttempts = 0;
   }
 
   /**
@@ -132,21 +143,42 @@ export class PlugNPlayClient<T extends Record<string, unknown> = EventMap> {
       return null;
     }
 
-    return new Promise((resolve) => {
-      const timeout = setTimeout(() => {
-        this.socket?.off('search-result', handleResult);
-        resolve(null);
-      }, this.config.searchTimeout ?? 30000); // Configurable search timeout, default 30 seconds
+    try {
+      // Validate search query on client side
+      const validatedQuery = SearchQuerySchema.parse(query) as SearchQuery;
+      
+      return new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+          this.socket?.off('search-result', handleResult);
+          this.socket?.off('error', handleError);
+          resolve(null);
+        }, this.config.searchTimeout ?? 30000);
 
-      const handleResult = (result: SearchResponse) => {
-        clearTimeout(timeout);
-        this.socket?.off('search-result', handleResult);
-        resolve(result);
-      };
+        const handleResult = (result: SearchResponse) => {
+          clearTimeout(timeout);
+          this.socket?.off('search-result', handleResult);
+          this.socket?.off('error', handleError);
+          resolve(result);
+        };
 
-      this.socket?.once('search-result', handleResult);
-      this.socket?.emit('search', query);
-    });
+        const handleError = (error: { error: Error }) => {
+          clearTimeout(timeout);
+          this.socket?.off('search-result', handleResult);
+          this.socket?.off('error', handleError);
+          this.logger.error('Search failed', { error: error.error.message });
+          resolve(null);
+        };
+
+        this.socket?.once('search-result', handleResult);
+        this.socket?.once('error', handleError);
+        this.socket?.emit('search', validatedQuery);
+      });
+    } catch (error) {
+      this.logger.error('Invalid search query', { 
+        error: error instanceof Error ? error.message : 'Unknown validation error' 
+      });
+      return null;
+    }
   }
 
   /**
@@ -251,7 +283,7 @@ export class PlugNPlayClient<T extends Record<string, unknown> = EventMap> {
     });
 
     // Handle search stream results
-    this.socket.on('search-stream', (data: { chunk: unknown; isLast: boolean }) => {
+    this.socket.on('search-stream', (data: { chunk: SearchResult; isLast: boolean }) => {
       this.emit('search-stream' as keyof T, data as T[keyof T]);
     });
 

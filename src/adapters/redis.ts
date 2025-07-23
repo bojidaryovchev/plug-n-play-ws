@@ -5,6 +5,7 @@ import {
   SessionMetadata,
   SearchQuery,
   SearchResponse,
+  Logger,
 } from '../types';
 import { BaseSearchAdapter, SearchConfig, DocumentData } from './base-search';
 import { UnifiedRedisInterface } from './redis-clients';
@@ -13,6 +14,7 @@ export interface UnifiedRedisAdapterConfig {
   redis: UnifiedRedisInterface;
   keyPrefix?: string;
   searchConfig?: Partial<SearchConfig>;
+  logger?: Logger;
   ttl?: {
     session: number;
     document: number;
@@ -27,6 +29,7 @@ export interface UnifiedRedisAdapterConfig {
 export class UnifiedRedisAdapter extends BaseSearchAdapter implements IAdapter {
   private redis: UnifiedRedisInterface;
   private keyPrefix: string;
+  private logger: Logger | undefined;
   private ttl: {
     session: number;
     document: number;
@@ -37,6 +40,7 @@ export class UnifiedRedisAdapter extends BaseSearchAdapter implements IAdapter {
     super(config.searchConfig);
     this.redis = config.redis;
     this.keyPrefix = config.keyPrefix || 'pnp-ws:';
+    this.logger = config.logger;
     this.ttl = {
       session: 24 * 60 * 60, // 24 hours
       document: 7 * 24 * 60 * 60, // 7 days
@@ -131,18 +135,26 @@ export class UnifiedRedisAdapter extends BaseSearchAdapter implements IAdapter {
     content: string,
     metadata?: Record<string, unknown>
   ): Promise<void> {
+    // Remove old index entries for this document first
+    await this.removeDocument(id);
+
     const docKey = this.getKey('doc', id);
+    
+    // Generate search terms
+    const { ngrams, edgegrams } = this.generateSearchTerms(content);
+    
+    // Track all terms for this document (for efficient removal)
+    const allTerms = [...ngrams, ...edgegrams];
+    
     const docData: string[] = [
       'content', content,
       'indexedAt', new Date().toISOString(),
+      'terms', JSON.stringify(allTerms), // Store terms for efficient removal
     ];
     
     if (metadata) {
       docData.push('metadata', JSON.stringify(metadata));
     }
-
-    // Generate search terms
-    const { ngrams, edgegrams } = this.generateSearchTerms(content);
 
     // Prepare pipeline commands
     const commands: Array<[string, ...string[]]> = [
@@ -169,18 +181,46 @@ export class UnifiedRedisAdapter extends BaseSearchAdapter implements IAdapter {
   }
 
   async removeDocument(id: string): Promise<void> {
-    // Remove from document store and index
-    await this.removeDocumentFromIndexes(id);
-    
+    // Get document to retrieve indexed terms
     const docKey = this.getKey('doc', id);
-    await this.redis.pipeline([
-      ['DEL', docKey],
-      ['SREM', this.getKey('docs', 'all'), id],
-    ]);
+    const doc = await this.redis.hgetall(docKey);
+    
+    if (doc && doc.terms) {
+      try {
+        const terms = JSON.parse(doc.terms) as string[];
+        const commands: Array<[string, ...string[]]> = [];
+        
+        // Remove from all indexed terms efficiently
+        for (const term of terms) {
+          // Try both n-gram and edge-gram keys (one will be a no-op)
+          const ngramKey = this.getKey('ngram', term);
+          const edgegramKey = this.getKey('edgegram', term);
+          commands.push(['SREM', ngramKey, id]);
+          commands.push(['SREM', edgegramKey, id]);
+        }
+        
+        // Remove document and from document list
+        commands.push(['DEL', docKey]);
+        commands.push(['SREM', this.getKey('docs', 'all'), id]);
+        
+        await this.redis.pipeline(commands);
+      } catch (error) {
+        // Fallback to old method if terms parsing fails
+        this.logger?.warn?.('Failed to parse indexed terms, using fallback removal', { id, error });
+        await this.removeDocumentFromIndexesFallback(id);
+      }
+    } else {
+      // Document doesn't exist or has no terms - just clean up references
+      await this.redis.pipeline([
+        ['DEL', docKey],
+        ['SREM', this.getKey('docs', 'all'), id],
+      ]);
+    }
   }
 
-  private async removeDocumentFromIndexes(id: string): Promise<void> {
-    // Get all index keys - this could be optimized by tracking indexed terms per document
+  private async removeDocumentFromIndexesFallback(id: string): Promise<void> {
+    // This is the old inefficient method - only used as fallback for migration
+    // TODO: Remove this method once all documents have been reindexed with terms tracking
     const [ngramKeys, edgegramKeys] = await Promise.all([
       this.redis.keys(this.getKey('ngram', '*')),
       this.redis.keys(this.getKey('edgegram', '*')),
@@ -190,6 +230,10 @@ export class UnifiedRedisAdapter extends BaseSearchAdapter implements IAdapter {
     for (const key of [...ngramKeys, ...edgegramKeys]) {
       commands.push(['SREM', key, id]);
     }
+    
+    // Remove document and from document list
+    commands.push(['DEL', this.getKey('doc', id)]);
+    commands.push(['SREM', this.getKey('docs', 'all'), id]);
 
     if (commands.length > 0) {
       await this.redis.pipeline(commands);
@@ -199,6 +243,28 @@ export class UnifiedRedisAdapter extends BaseSearchAdapter implements IAdapter {
   // Search Implementation
   async search(query: SearchQuery): Promise<SearchResponse> {
     const startTime = Date.now();
+    
+    // Add search timeout
+    const searchTimeout = 10000; // 10 seconds timeout for Redis operations
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Search timeout')), searchTimeout);
+    });
+    
+    try {
+      const searchPromise = this.performSearch(query, startTime);
+      return await Promise.race([searchPromise, timeoutPromise]);
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Search timeout') {
+        this.logger?.error?.('Search timeout exceeded', { 
+          query: query.query, 
+          timeout: searchTimeout 
+        });
+      }
+      throw error;
+    }
+  }
+
+  private async performSearch(query: SearchQuery, startTime: number): Promise<SearchResponse> {
     const { searchTerms, isValid } = this.normalizeSearchQuery(query);
 
     if (!isValid) {

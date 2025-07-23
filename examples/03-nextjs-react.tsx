@@ -1,16 +1,61 @@
 // Next.js API route + React hook integration example
+// 
+// Setup Instructions:
+// 1. Install: npm install plug-n-play-ws socket.io socket.io-client react
+// 2. Add to next.config.js: { experimental: { esmExternals: true } }
+// 3. For styled-jsx: npm install styled-jsx
+// 4. Set environment: NEXT_PUBLIC_WS_URL=http://localhost:3001
+// 5. This example demonstrates: server setup, React integration, real-time search
 
+// ============================================================================
 // File: app/api/ws/route.ts (Next.js 13+ App Router)
-import { PlugNPlayServer } from 'plug-n-play-ws/server';
+// ============================================================================
+
+import { PlugNPlayServer } from 'plug-n-play-ws';
 import { createNextJSHandler } from 'plug-n-play-ws/nextjs';
 
-// Create a global server instance (in production, you might use a singleton pattern)
+// Create server with enhanced configuration for production
 const server = new PlugNPlayServer({
   port: 3001,
+  heartbeatInterval: 30000, // 30s for web clients
+  heartbeatTimeout: 60000, // 1min timeout
   cors: {
     origin: process.env.NODE_ENV === 'development' ? true : ['https://yourdomain.com'],
     credentials: true,
   },
+  logger: {
+    debug: (msg, meta) => console.log(`[WS DEBUG] ${msg}`, meta || ''),
+    info: (msg, meta) => console.log(`[WS INFO] ${msg}`, meta || ''),
+    warn: (msg, meta) => console.warn(`[WS WARN] ${msg}`, meta || ''),
+    error: (msg, meta) => console.error(`[WS ERROR] ${msg}`, meta || ''),
+  },
+});
+
+// Handle chat messages and index them for search
+server.on('chat-message', async (data: unknown) => {
+  const chatData = data as { user: string; message: string; timestamp: number };
+  
+  // Index message for search functionality
+  const messageId = `msg-${chatData.user}-${chatData.timestamp}`;
+  await server.indexContent(messageId, chatData.message, {
+    user: chatData.user,
+    timestamp: chatData.timestamp,
+    type: 'chat-message',
+  });
+
+  // Broadcast to all connected clients
+  server.broadcast('chat-message', chatData);
+});
+
+// Handle user presence
+server.on('user-joined', (data: unknown) => {
+  const userData = data as { user: string; timestamp: number };
+  server.broadcast('user-joined', userData);
+});
+
+server.on('user-left', (data: unknown) => {
+  const userData = data as { user: string; timestamp: number };
+  server.broadcast('user-left', userData);
 });
 
 // Start the WebSocket server (this should ideally be done in instrumentation.ts)
@@ -29,9 +74,13 @@ export {
   handler as OPTIONS,
 };
 
+// ============================================================================
 // File: components/ChatComponent.tsx
+// ============================================================================
+
 import React, { useState, useEffect } from 'react';
 import { usePlugNPlayWs, usePlugNPlaySearch } from 'plug-n-play-ws/react';
+import { SearchResult } from 'plug-n-play-ws';
 
 interface ChatEvents extends Record<string, unknown> {
   'chat-message': { user: string; message: string; timestamp: number };
@@ -51,15 +100,20 @@ export function ChatComponent({ username }: { username: string }) {
   const [inputMessage, setInputMessage] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Initialize WebSocket connection
+  // Initialize WebSocket connection with enhanced configuration
   const ws = usePlugNPlayWs<ChatEvents>({
     url: process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:3001',
     auth: { userId: username },
+    reconnectionAttempts: 10,
+    reconnectionDelay: 1000,
+    timeout: 10000,
     onConnect: (data) => {
-      console.log('Connected with session:', data.sessionId);
+      const connectData = data as { sessionId: string };
+      console.log('Connected with session:', connectData.sessionId);
     },
     onDisconnect: (data) => {
-      console.log('Disconnected:', data.reason);
+      const disconnectData = data as { reason: string };
+      console.log('Disconnected:', disconnectData.reason);
     },
     onError: (error) => {
       console.error('WebSocket error:', error);
@@ -181,7 +235,7 @@ export function ChatComponent({ username }: { username: string }) {
         {search.results && (
           <div className="search-results">
             <h4>Search Results ({search.results.total} found)</h4>
-            {search.results.results.map((result: any) => (
+            {search.results.results.map((result: SearchResult) => (
               <div key={result.id} className="search-result">
                 <strong>Score: {result.score.toFixed(2)}</strong>
                 <div>{JSON.stringify(result.data)}</div>
@@ -217,6 +271,7 @@ export function ChatComponent({ username }: { username: string }) {
         </button>
       </div>
 
+      {/* Note: styled-jsx requires the babel plugin in Next.js config */}
       <style jsx>{`
         .chat-container {
           max-width: 800px;
@@ -326,7 +381,10 @@ export function ChatComponent({ username }: { username: string }) {
   );
 }
 
+// ============================================================================
 // File: app/chat/page.tsx
+// ============================================================================
+
 export default function ChatPage() {
   const [username, setUsername] = useState('');
   const [joined, setJoined] = useState(false);

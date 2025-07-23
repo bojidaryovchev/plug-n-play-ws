@@ -480,6 +480,70 @@ process.on('SIGTERM', async () => {
 });
 ```
 
+## 📚 Examples
+
+The `examples/` directory contains comprehensive examples demonstrating various features:
+
+### 01-basic-echo.ts
+Basic server-client communication with modern features:
+- Connection limiting and heartbeat configuration
+- User count tracking and broadcasts
+- Enhanced error handling and reconnection
+- Type-safe event handling
+
+```bash
+npm run example:echo
+```
+
+### 02-redis-search.ts
+Redis storage with search functionality:
+- Document indexing with metadata
+- Full-text search with relevance scoring  
+- Real-time result broadcasting
+- Production Redis configuration
+
+```bash
+npm run example:redis
+```
+
+### 03-nextjs-react.tsx
+Complete Next.js integration example:
+- API route setup with WebSocket server
+- React component with search functionality
+- Type-safe hooks integration
+- Responsive UI with real-time updates
+
+### 04-streaming-search.ts
+Advanced streaming search capabilities:
+- Real-time search result streaming
+- Optimized search configuration
+- Large dataset handling
+- Progressive result display
+
+```bash
+npm run example:streaming
+```
+
+### 05-upstash-serverless.ts
+Serverless-ready Upstash Redis integration:
+- Environment-based adapter selection
+- Automatic fallback to regular Redis
+- Optimized for edge computing
+- Rate limiting and error handling
+
+```bash
+npm run example:upstash
+```
+
+#### Running Examples
+
+1. **Basic Echo**: `cd examples && npx tsx 01-basic-echo.ts`
+2. **Redis Search**: Ensure Redis is running, then `npx tsx 02-redis-search.ts`  
+3. **Streaming**: `npx tsx 04-streaming-search.ts`
+4. **Upstash**: Set environment variables, then `npx tsx 05-upstash-serverless.ts`
+
+Each example includes detailed logging and demonstrates best practices for production usage.
+
 ## 🧪 Testing
 
 ```bash
