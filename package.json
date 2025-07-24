@@ -1,6 +1,6 @@
 {
   "name": "plug-n-play-ws",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "A plug-and-play WebSocket layer on top of Socket.IO with full TypeScript support, zero manual wiring, and production-ready features",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
