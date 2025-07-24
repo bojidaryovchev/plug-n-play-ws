@@ -179,8 +179,10 @@ export class MemoryAdapter extends BaseSearchAdapter implements IAdapter {
               }
             }
             // Increment score for each n-gram match
-            const current = documentScores.get(docId)!;
-            current.score += this.searchConfig.ngramWeight;
+            const current = documentScores.get(docId);
+            if (current) {
+              current.score += this.searchConfig.ngramWeight;
+            }
           }
         }
       }
@@ -197,8 +199,10 @@ export class MemoryAdapter extends BaseSearchAdapter implements IAdapter {
               }
             }
             // Increment score for each edge-gram match
-            const current = documentScores.get(docId)!;
-            current.score += this.searchConfig.edgegramWeight;
+            const current = documentScores.get(docId);
+            if (current) {
+              current.score += this.searchConfig.edgegramWeight;
+            }
           }
         }
       }
